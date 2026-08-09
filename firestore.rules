@@ -1,0 +1,53 @@
+﻿rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Trainers - public read for home screen & booking
+    match /trainers/{id} {
+      allow read: if true;
+      allow write: if true; // admin panel (tighten in prod)
+    }
+
+    // Offers - public read
+    match /offers/{id} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Services - public read
+    match /services/{id} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Slots - public read, auth write
+    match /slots/{id} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Reviews - PUBLIC READ so home screen shows them
+    // Admin panel needs write access to publish/unpublish
+    match /reviews/{id} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Bookings - user can read their own, auth create
+    match /bookings/{id} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Users - user can read/write own profile
+    match /users/{uid} {
+      allow read, write: if true;
+    }
+
+    // Notifications
+    match /notifications/{id} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "811919628171",
+    "project_id": "glamzo-da7a7",
+    "storage_bucket": "glamzo-da7a7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:811919628171:android:8f0e52046295d45496418e",
+        "android_client_info": {
+          "package_name": "com.glamzo.glamzo_saloon"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDATZiTvtQfsNp-kSn_jN3q6WpYWi2DCZs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
