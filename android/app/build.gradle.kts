@@ -12,12 +12,25 @@ android {
     compileSdk = 36
 
     signingConfigs {
-        create("release") {
-            storeFile = file("glamzo-release.keystore")
-            storePassword = "glamzo123"
-            keyAlias = "glamzo"
-            keyPassword = "glamzo123"
+        // ⚠️  SECURITY: NEVER hardcode keystore credentials here.
+    // Store them in android/local.properties (already .gitignored):
+    //   storePassword=your_store_password
+    //   keyPassword=your_key_password
+    //   keyAlias=glamzo
+    //   storeFile=glamzo-release.keystore
+    //
+    // Then read them below:
+    create("release") {
+        val props = java.util.Properties()
+        val localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            props.load(localPropsFile.inputStream())
         }
+        storeFile = file(props.getProperty("storeFile", "glamzo-release.keystore"))
+        storePassword = props.getProperty("storePassword", "")
+        keyAlias = props.getProperty("keyAlias", "glamzo")
+        keyPassword = props.getProperty("keyPassword", "")
+    }
     }
 
     defaultConfig {

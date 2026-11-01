@@ -68,13 +68,25 @@
 		</array>
 		<key>CFBundleURLTypes</key>
 		<array>
+			<!-- Google Sign-In: Replace YOUR_CLIENT_ID with the REVERSED_CLIENT_ID
+			     from your GoogleService-Info.plist file (found in Xcode project settings) -->
 			<dict>
 				<key>CFBundleTypeRole</key>
 				<string>Editor</string>
 				<key>CFBundleURLSchemes</key>
 				<array>
-					<!-- Replace YOUR_CLIENT_ID with REVERSED_CLIENT_ID from GoogleService-Info.plist -->
 					<string>com.googleusercontent.apps.YOUR_CLIENT_ID</string>
+				</array>
+			</dict>
+			<!-- Razorpay payment callback deep link: glamzo://payment/callback -->
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLName</key>
+				<string>com.glamzo.glamzoSaloon</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>glamzo</string>
 				</array>
 			</dict>
 		</array>

@@ -1,53 +1,117 @@
-﻿rules_version = '2';
+rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Trainers - public read for home screen & booking
+    // ── Helper functions ──────────────────────────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isValidString(val, maxLen) {
+      return val is string && val.size() > 0 && val.size() <= maxLen;
+    }
+
+    // ── Trainers — public read, ADMIN write only ──────────────────────────
+    // Clients should NEVER be able to write trainer profiles.
+    // Admin panel write is secured via Firebase Admin SDK (server-side).
     match /trainers/{id} {
       allow read: if true;
-      allow write: if true; // admin panel (tighten in prod)
+      allow write: if false; // Use Admin SDK / Cloud Functions for writes
     }
 
-    // Offers - public read
+    // ── Offers — public read, ADMIN write only ────────────────────────────
     match /offers/{id} {
       allow read: if true;
-      allow write: if true;
+      allow write: if false; // Use Admin SDK / Cloud Functions for writes
     }
 
-    // Services - public read
+    // ── Services — public read, ADMIN write only ──────────────────────────
     match /services/{id} {
       allow read: if true;
-      allow write: if true;
+      allow write: if false; // Use Admin SDK / Cloud Functions for writes
     }
 
-    // Slots - public read, auth write
+    // ── Slots — public read; only authenticated users can reserve/update ──
+    // Write restricted: users can only update status & bookingId fields.
+    // Full slot management (create/delete) must happen server-side.
     match /slots/{id} {
       allow read: if true;
-      allow write: if true;
+      allow create: if false; // Slots created server-side only
+      allow update: if isAuthenticated()
+        && request.resource.data.keys().hasOnly(['status', 'bookingId', 'reservedAt'])
+        && request.resource.data.status in ['available', 'reserved', 'booked'];
+      allow delete: if false;
     }
 
-    // Reviews - PUBLIC READ so home screen shows them
-    // Admin panel needs write access to publish/unpublish
+    // ── Reviews — public read; auth users can create their OWN review ─────
     match /reviews/{id} {
       allow read: if true;
-      allow write: if true;
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid
+        && isValidString(request.resource.data.text, 1000)
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5;
+      allow update, delete: if false; // Admin SDK only
     }
 
-    // Bookings - user can read their own, auth create
+    // ── Bookings — users see & create ONLY their own bookings ─────────────
     match /bookings/{id} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending_payment'
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0;
+      // Status updates (confirm/cancel) must happen server-side via Cloud Functions
+      allow update: if isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['status', 'utrNumber', 'paymentClaimed', 'paymentClaimedAt', 'phonePeTransactionId'])
+        && request.resource.data.status in ['pending_verification', 'cancelled'];
+      allow delete: if false;
     }
 
-    // Users - user can read/write own profile
+    // ── Users — users can read/write ONLY their own profile ───────────────
     match /users/{uid} {
-      allow read, write: if true;
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasAll(['uid', 'phone', 'createdAt'])
+        && request.resource.data.uid == uid;
+      allow update: if isOwner(uid)
+        // Prevent users from directly modifying financial fields
+        && !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['walletBalance', 'loyaltyPoints', 'hasLoyaltyVoucher',
+                     'welcomeBonusCredited', 'oneTimeOfferClaimed']);
+      allow delete: if false;
+
+      // Wallet transactions — user can read their own; writes via Cloud Functions only
+      match /transactions/{txnId} {
+        allow read: if isOwner(uid);
+        allow write: if false; // Enforce server-side writes for financial integrity
+      }
     }
 
-    // Notifications
+    // ── Loyalty transactions — user reads own; writes via Cloud Functions ─
+    match /loyalty_transactions/{id} {
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+      allow write: if false; // Server-side only for financial integrity
+    }
+
+    // ── Notifications — user reads own; writes via Cloud Functions ────────
     match /notifications/{id} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['isRead'])
+        && request.resource.data.isRead == true;
+      allow create, delete: if false;
     }
   }
 }

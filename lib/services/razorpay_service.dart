@@ -8,41 +8,48 @@ import '../core/constants/app_constants.dart';
 // Razorpay Payment Gateway Service
 //
 // Flow:
-//  1. initiatePayment() → POST /v1/payment_links → get short_url
-//  2. Open short_url in browser (Razorpay checkout: GPay / UPI / Cards / NetBanking)
-//  3. User pays with ANY method
-//  4. App resumes → checkPaymentStatus() → paid / failed / pending
-//  5. Auto-confirm or cancel booking — ZERO admin involvement
+//  1. initiatePayment() → Opens Razorpay hosted checkout URL in browser
+//  2. User pays with ANY method (GPay / UPI / Cards / NetBanking)
+//  3. Razorpay redirects browser to glamzo://payment/callback (deep link)
+//  4. App resumes via AppLifecycleState.resumed → checkStatusWithRetry()
+//  5. ⚠️  IMPORTANT: Final payment verification MUST be done server-side
+//     via Firebase Cloud Function + Razorpay webhook signature check.
+//     The client-side status check here is a UX convenience only — the
+//     Cloud Function is the authoritative payment confirmation source.
 //
-// Checkout supports: GPay · PhonePe UPI · Paytm · BHIM · All UPI ·
-//                    Credit/Debit Cards (Visa, MC, RuPay, Amex) · NetBanking
-//
-// NOTE: Only the Key ID is used here (client-safe).
-//       Key Secret is used server-side only (never in the app).
+// Security Notes:
+//  • Key ID is safe to expose in the client (read-only, no charge capability)
+//  • Key Secret is NEVER in the app — always server-side only
+//  • Payment confirmation is authoritative via Razorpay webhook → Cloud Fn
+//  • Client-side status check is for UX feedback only, NOT for booking confirm
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RazorpayService {
-  // ── API Base URL ──────────────────────────────────────────────────────────
-  static const String _apiBase = 'https://api.razorpay.com/v1';
-
-  // ── Endpoints ─────────────────────────────────────────────────────────────
+  static const String _apiBase          = 'https://api.razorpay.com/v1';
   static const String _paymentsEndpoint = '/payments';
+
+  // Maximum retries for status check to avoid infinite loops
+  static const int _maxStatusRetries = 5;
 
   /// No-op init — kept for API compatibility
   static Future<void> init() async {
     debugPrint('✅ Razorpay PG ready [${AppConstants.razorpayEnvironment}]');
+    // Validate that Key ID is set and not a placeholder
+    if (AppConstants.razorpayKeyId.contains('XXXX')) {
+      debugPrint('⚠️  WARNING: Razorpay Key ID is a placeholder. '
+          'Replace it in AppConstants before release.');
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 1 — Initiate Payment via Razorpay Payment Links
+  // STEP 1 — Initiate Payment via Razorpay hosted checkout
   //
-  // Creates a Razorpay Payment Link and opens it in the browser.
-  // The checkout page allows: GPay · UPI · Paytm · Cards · NetBanking
+  // Creates a Razorpay checkout URL and opens it in the browser.
   // Returns [RazorpayResult] with success=true if checkout opened.
   //
-  // ⚠️  In TEST mode, Payment Links API requires a Key Secret on the server.
-  //     For a pure client-side flow (no backend), we fall back to the
-  //     Razorpay hosted checkout redirect URL with prefilled params.
+  // ⚠️  Security: Do NOT trust the client-side return value of this function
+  //     as payment confirmation. Use checkStatusWithRetry() for UX feedback
+  //     and rely on the Razorpay webhook → Cloud Function for final truth.
   // ─────────────────────────────────────────────────────────────────────────
   static Future<RazorpayResult> initiatePayment({
     required double amount,
@@ -53,56 +60,86 @@ class RazorpayService {
     String? customerEmail,
     String? description,
   }) async {
+    // ── Input validation ────────────────────────────────────────────────────
+    if (amount <= 0) {
+      return RazorpayResult(
+        success: false,
+        transactionId: merchantTransactionId,
+        message: 'Invalid payment amount.',
+        status: 'INVALID_AMOUNT',
+      );
+    }
+
+    if (merchantTransactionId.isEmpty) {
+      return RazorpayResult(
+        success: false,
+        transactionId: '',
+        message: 'Transaction ID is required.',
+        status: 'INVALID_TXN_ID',
+      );
+    }
+
     try {
-      final amountInPaise = (amount * 100).toInt();
+      final amountInPaise = (amount * 100).round(); // Use round() not toInt() to avoid floating-point errors
       final sanitisedPhone = mobileNumber.replaceAll(RegExp(r'[^0-9]'), '');
+
+      // Validate sanitised phone (10 digits for India)
+      final validPhone = sanitisedPhone.length >= 10 ? sanitisedPhone : '';
 
       debugPrint('💳 Razorpay PG: Initiating payment ₹$amount');
       debugPrint('🔑 Txn Ref: $merchantTransactionId');
 
       // ── Build Razorpay hosted checkout URL ────────────────────────────────
-      // This URL opens Razorpay's universal payment page which supports
-      // UPI (GPay, PhonePe, Paytm, BHIM) + Cards + NetBanking.
-      //
       // Parameters:
-      //   key         → your Key ID (safe to expose in client)
-      //   amount      → in paise
+      //   key         → Key ID (safe to expose — cannot create charges alone)
+      //   amount      → in paise (smallest INR unit)
       //   currency    → INR
       //   name        → business name shown on checkout
       //   description → booking description
-      //   prefill     → pre-fills customer details
-      //   callback_url→ where Razorpay redirects after payment
-      //   redirect    → true = browser redirect flow (works without SDK)
+      //   prefill     → pre-fills customer details (UX improvement only)
+      //   callback_url→ deep link back to app after payment
+      //   redirect    → true = browser redirect flow (no native SDK needed)
       // ─────────────────────────────────────────────────────────────────────
-      final checkoutParams = {
+      final checkoutParams = <String, String>{
         'key':          AppConstants.razorpayKeyId,
         'amount':       amountInPaise.toString(),
         'currency':     'INR',
         'name':         AppConstants.razorpayBusinessName,
         'description':  description ?? 'Glamzo Salon Booking',
         'order_id':     merchantTransactionId,
-        'prefill[contact]': sanitisedPhone.isNotEmpty ? sanitisedPhone : '',
-        if (customerName  != null) 'prefill[name]' : customerName,
-        if (customerEmail != null) 'prefill[email]': customerEmail,
         'theme[color]': AppConstants.razorpayThemeColor,
         'callback_url': AppConstants.razorpayCallbackUrl,
         'redirect':     'true',
       };
 
-      // Build the hosted checkout URL
+      if (validPhone.isNotEmpty) {
+        checkoutParams['prefill[contact]'] = validPhone;
+      }
+      if (customerName != null && customerName.trim().isNotEmpty) {
+        checkoutParams['prefill[name]'] = customerName.trim();
+      }
+      if (customerEmail != null && customerEmail.trim().isNotEmpty
+          && customerEmail.contains('@')) {
+        checkoutParams['prefill[email]'] = customerEmail.trim();
+      }
+
       final uri = Uri.https(
         'api.razorpay.com',
         '/v1/checkout/embedded',
         checkoutParams,
       );
 
-      debugPrint('🌐 Opening Razorpay checkout: $uri');
+      debugPrint('🌐 Opening Razorpay checkout');
 
       bool opened = false;
       try {
         opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
       } catch (_) {
-        opened = await launchUrl(uri, mode: LaunchMode.platformDefault);
+        try {
+          opened = await launchUrl(uri, mode: LaunchMode.platformDefault);
+        } catch (e) {
+          debugPrint('❌ Failed to launch URL: $e');
+        }
       }
 
       if (!opened) {
@@ -125,56 +162,87 @@ class RazorpayService {
       return RazorpayResult(
         success: false,
         transactionId: merchantTransactionId,
-        message: 'Payment initiation failed: ${e.toString()}',
+        message: 'Payment initiation failed. Please try again.',
+        // Do not expose internal error messages to the UI in production
         status: 'ERROR',
       );
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // STEP 2 — Check Payment Status (called after user returns to app)
+  // STEP 2 — Check Payment Status (UX convenience only)
+  //
+  // ⚠️  IMPORTANT SECURITY NOTE:
+  //     This is a CLIENT-SIDE check using only the Key ID (no secret).
+  //     It is used ONLY to show the user feedback (spinner, success/fail UI).
+  //     The authoritative payment verification is:
+  //       Razorpay Webhook → Firebase Cloud Function → verify HMAC signature
+  //       → update Firestore booking status
+  //     Never confirm a booking solely based on this client-side result.
   //
   // Queries Razorpay's payments API by order reference.
   // Returns:
-  //   RazorpayPaymentStatus.success  → auto-confirm booking
+  //   RazorpayPaymentStatus.success  → show success UI (booking confirmed by webhook)
   //   RazorpayPaymentStatus.pending  → wait / retry
-  //   RazorpayPaymentStatus.failed   → cancel booking
-  //
-  // NOTE: Full status verification via signature requires Key Secret on
-  // a backend server. This client-side check queries the public payments
-  // endpoint with the Key ID. For production, move this to Firebase Functions.
+  //   RazorpayPaymentStatus.failed   → show fail UI (booking cancelled by webhook)
   // ─────────────────────────────────────────────────────────────────────────
   static Future<RazorpayStatusResult> checkPaymentStatus({
     required String merchantTransactionId,
   }) async {
+    if (merchantTransactionId.isEmpty) {
+      return RazorpayStatusResult(
+        status:  RazorpayPaymentStatus.pending,
+        code:    'INVALID_ID',
+        message: 'Transaction ID is missing.',
+      );
+    }
+
     try {
       debugPrint('🔍 Checking Razorpay payment status: $merchantTransactionId');
 
-      // Query Razorpay payments filtered by our order reference
       final uri = Uri.parse(
         '$_apiBase$_paymentsEndpoint?count=1&description=$merchantTransactionId',
       );
 
+      // Note: Without the Key Secret, this endpoint may return limited data.
+      // Full verification requires server-side Basic auth with Key ID + Secret.
       final response = await http.get(
         uri,
         headers: {
           'Content-Type': 'application/json',
-          // Basic auth: Key ID as username, empty password (no secret in app)
+          // Key ID only — Key Secret never goes in the app
           'Authorization': 'Basic ${base64Encode(utf8.encode('${AppConstants.razorpayKeyId}:'))}',
         },
-      ).timeout(const Duration(seconds: 15));
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => http.Response('{"error":"timeout"}', 408),
+      );
+
+      if (response.statusCode == 408) {
+        return RazorpayStatusResult(
+          status:  RazorpayPaymentStatus.pending,
+          code:    'TIMEOUT',
+          message: 'Payment status check timed out. Please wait…',
+        );
+      }
+
+      if (response.statusCode != 200) {
+        debugPrint('⚠️ Razorpay API returned ${response.statusCode}');
+        return RazorpayStatusResult(
+          status:  RazorpayPaymentStatus.pending,
+          code:    'API_ERROR',
+          message: 'Waiting for payment confirmation…',
+        );
+      }
 
       final responseData = jsonDecode(response.body) as Map<String, dynamic>;
-      debugPrint('📩 Razorpay Status Response: $responseData');
 
-      if (response.statusCode == 200) {
-        final items = responseData['items'] as List<dynamic>? ?? [];
-        if (items.isNotEmpty) {
-          final payment  = items.first as Map<String, dynamic>;
-          final status   = payment['status'] as String? ?? '';
-          final payId    = payment['id']     as String? ?? '';
-          return _mapStatus(status, payId);
-        }
+      final items = responseData['items'] as List<dynamic>? ?? [];
+      if (items.isNotEmpty) {
+        final payment  = items.first as Map<String, dynamic>;
+        final status   = payment['status'] as String? ?? '';
+        final payId    = payment['id']     as String? ?? '';
+        return _mapStatus(status, payId);
       }
 
       // No payment found yet — treat as pending
@@ -195,21 +263,24 @@ class RazorpayService {
 
   // ─────────────────────────────────────────────────────────────────────────
   // Retry status check with exponential back-off
-  // Useful after app resumes — Razorpay may not update instantly.
+  // maxRetries is capped at _maxStatusRetries to prevent infinite loops.
   // ─────────────────────────────────────────────────────────────────────────
   static Future<RazorpayStatusResult> checkStatusWithRetry({
     required String merchantTransactionId,
     int maxRetries = 4,
     Duration initialDelay = const Duration(seconds: 2),
   }) async {
+    // Safety cap to prevent DoS-ing Razorpay's API
+    final effectiveRetries = maxRetries.clamp(1, _maxStatusRetries);
     Duration delay = initialDelay;
-    for (int i = 0; i < maxRetries; i++) {
+
+    for (int i = 0; i < effectiveRetries; i++) {
       final result = await checkPaymentStatus(
           merchantTransactionId: merchantTransactionId);
       if (result.status != RazorpayPaymentStatus.pending) return result;
-      if (i < maxRetries - 1) {
+      if (i < effectiveRetries - 1) {
         debugPrint(
-            '⏳ Payment pending, retrying in ${delay.inSeconds}s (attempt ${i + 1}/$maxRetries)');
+            '⏳ Payment pending, retrying in ${delay.inSeconds}s (attempt ${i + 1}/$effectiveRetries)');
         await Future.delayed(delay);
         delay = delay * 2; // Exponential back-off
       }
@@ -253,7 +324,7 @@ class RazorpayService {
       default:
         return RazorpayStatusResult(
           status:  RazorpayPaymentStatus.pending,
-          code:    status,
+          code:    'UNKNOWN',  // Don't expose raw status strings
           message: 'Waiting for payment confirmation…',
         );
     }

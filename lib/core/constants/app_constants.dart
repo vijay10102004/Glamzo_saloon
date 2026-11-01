@@ -39,8 +39,9 @@ class AppConstants {
   static const String razorpayThemeColor   = '#C9A96E';                    // Gold brand color
 
   // Redirect URL after Razorpay payment completes (browser closes and returns to app)
-  // For production: use a deep-link like 'glamzo://payment/callback'
-  static const String razorpayCallbackUrl  = 'https://glamzo.in/payment/callback';
+  // Uses a custom deep-link scheme. Register 'glamzo' scheme in AndroidManifest.xml
+  // and iOS Info.plist URL Schemes so the OS can route it back to this app.
+  static const String razorpayCallbackUrl  = 'glamzo://payment/callback';
 
   // Webhook URL — where Razorpay sends server-to-server payment notification
   // Set this in Razorpay Dashboard → Webhooks
@@ -60,7 +61,11 @@ class AppConstants {
   static const int slotReservationMinutes = 15;
 
   // ── ImgBB ──────────────────────────────────────────────────────────────────
-  static const String imgBbApiKey    = '6903f3bf70feb32c2581845e01f765fc';
+  // ⚠️  SECURITY: Move this key to a Firebase Remote Config or a server-side
+  // Cloud Function. Never ship a third-party API key in a release binary.
+  // For now, store in a .env file and inject via --dart-define at build time:
+  //   flutter build apk --dart-define=IMGBB_API_KEY=your_key_here
+  static const String imgBbApiKey    = String.fromEnvironment('IMGBB_API_KEY', defaultValue: '');
   static const String imgBbUploadUrl = 'https://api.imgbb.com/1/upload';
 
   // ── Loyalty System ─────────────────────────────────────────────────────────

@@ -85,12 +85,18 @@ class AuthService {
     required String uid,
     required String name,
   }) async {
+    // Input validation — prevent empty names and excessively long strings
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) throw Exception('Name cannot be empty');
+    if (trimmed.length < 2) throw Exception('Name must be at least 2 characters');
+    if (trimmed.length > 50) throw Exception('Name is too long (max 50 characters)');
+
     await _firestore.collection('users').doc(uid).update({
-      'name': name,
+      'name': trimmed,
       'isNewUser': false,
     });
     // Also update Firebase Auth display name
-    await _auth.currentUser?.updateDisplayName(name);
+    await _auth.currentUser?.updateDisplayName(trimmed);
   }
 
   /// Full profile setup (name + gender + dob)
@@ -101,14 +107,34 @@ class AuthService {
     DateTime? dob,
     String photoUrl = '',
   }) async {
+    // Input validation
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty) throw Exception('Name cannot be empty');
+    if (trimmedName.length < 2) throw Exception('Name must be at least 2 characters');
+    if (trimmedName.length > 50) throw Exception('Name is too long (max 50 characters)');
+
+    const validGenders = ['male', 'female', 'other', 'prefer_not_to_say'];
+    if (!validGenders.contains(gender.toLowerCase())) {
+      throw Exception('Invalid gender value');
+    }
+
+    // Validate dob: must be in the past and not more than 120 years ago
+    if (dob != null) {
+      final now = DateTime.now();
+      if (dob.isAfter(now)) throw Exception('Date of birth cannot be in the future');
+      if (dob.isBefore(now.subtract(const Duration(days: 365 * 120)))) {
+        throw Exception('Invalid date of birth');
+      }
+    }
+
     await _firestore.collection('users').doc(uid).update({
-      'name': name,
-      'gender': gender,
+      'name': trimmedName,
+      'gender': gender.toLowerCase(),
       if (dob != null) 'dob': dob,
       'photoUrl': photoUrl,
       'isNewUser': false,
     });
-    await _auth.currentUser?.updateDisplayName(name);
+    await _auth.currentUser?.updateDisplayName(trimmedName);
   }
 
   // ── WELCOME BONUS ──
